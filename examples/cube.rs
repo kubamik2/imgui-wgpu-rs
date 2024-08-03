@@ -2,13 +2,10 @@ use bytemuck::{Pod, Zeroable};
 use imgui::*;
 use imgui_wgpu::{Renderer, RendererConfig, Texture, TextureConfig};
 use pollster::block_on;
-use std::time::Instant;
-use wgpu::{include_wgsl, util::DeviceExt, Extent3d};
+use std::{sync::Arc, time::Instant};
+use wgpu::{include_wgsl, util::DeviceExt, Extent3d, PipelineCompilationOptions};
 use winit::{
-    dpi::LogicalSize,
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    window::Window,
+    dpi::LogicalSize, event::{Event, KeyEvent, WindowEvent}, event_loop::{ControlFlow, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::Window
 };
 
 const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
@@ -254,11 +251,13 @@ impl Example {
                 module: &shader,
                 entry_point: "vs_main",
                 buffers: &vertex_buffers,
+                compilation_options: PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: "fs_main",
                 targets: &[Some(config.format.into())],
+                compilation_options: PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
@@ -332,7 +331,7 @@ fn main() {
     env_logger::init();
 
     // Set up window and GPU
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
@@ -342,15 +341,15 @@ fn main() {
     let (window, size, surface) = {
         let version = env!("CARGO_PKG_VERSION");
 
-        let window = Window::new(&event_loop).unwrap();
-        window.set_inner_size(LogicalSize {
+        let window = Arc::new(Window::new(&event_loop).unwrap());
+        window.set_min_inner_size(Some(LogicalSize {
             width: 1280.0,
             height: 720.0,
-        });
+        }));
         window.set_title(&format!("imgui-wgpu {version}"));
         let size = window.inner_size();
 
-        let surface = unsafe { instance.create_surface(&window) }.unwrap();
+        let surface = instance.create_surface(window.clone()).unwrap();
 
         (window, size, surface)
     };
@@ -376,6 +375,7 @@ fn main() {
         present_mode: wgpu::PresentMode::Fifo,
         alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![wgpu::TextureFormat::Bgra8Unorm],
+        desired_maximum_frame_latency: 2
     };
 
     surface.configure(&device, &surface_desc);
@@ -443,12 +443,8 @@ fn main() {
     let example_texture_id = renderer.textures.insert(texture);
 
     // Event loop
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = if cfg!(feature = "metal-auto-capture") {
-            ControlFlow::Exit
-        } else {
-            ControlFlow::Poll
-        };
+    event_loop.run(move |event, control_flow| {
+        control_flow.set_control_flow(ControlFlow::Poll);
         match event {
             Event::WindowEvent {
                 event: WindowEvent::Resized(size),
@@ -462,6 +458,7 @@ fn main() {
                     present_mode: wgpu::PresentMode::Fifo,
                     alpha_mode: wgpu::CompositeAlphaMode::Auto,
                     view_formats: vec![wgpu::TextureFormat::Bgra8Unorm],
+                    desired_maximum_frame_latency: 2,
                 };
 
                 surface.configure(&device, &surface_desc);
@@ -469,12 +466,10 @@ fn main() {
             Event::WindowEvent {
                 event:
                     WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                virtual_keycode: Some(VirtualKeyCode::Escape),
-                                state: ElementState::Pressed,
-                                ..
-                            },
+                        event: KeyEvent {
+                            physical_key: PhysicalKey::Code(KeyCode::Escape),
+                            ..
+                        },
                         ..
                     },
                 ..
@@ -483,10 +478,10 @@ fn main() {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                *control_flow = ControlFlow::Exit;
+                control_flow.exit();
             }
-            Event::MainEventsCleared => window.request_redraw(),
-            Event::RedrawEventsCleared => {
+            Event::AboutToWait => window.request_redraw(),
+            Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
                 let now = Instant::now();
                 imgui.io_mut().update_delta_time(now - last_frame);
                 last_frame = now;
@@ -589,5 +584,5 @@ fn main() {
         }
 
         platform.handle_event(imgui.io_mut(), &window, &event);
-    });
+    }).unwrap();
 }

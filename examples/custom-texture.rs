@@ -2,20 +2,17 @@ use image::ImageFormat;
 use imgui::*;
 use imgui_wgpu::{Renderer, RendererConfig, Texture, TextureConfig};
 use pollster::block_on;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 use wgpu::Extent3d;
 use winit::{
-    dpi::LogicalSize,
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    window::Window,
+    dpi::LogicalSize, event::{Event, KeyEvent, WindowEvent}, event_loop::{ControlFlow, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::Window
 };
 
 fn main() {
     env_logger::init();
 
     // Set up window and GPU
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
@@ -25,15 +22,15 @@ fn main() {
     let (window, size, surface) = {
         let version = env!("CARGO_PKG_VERSION");
 
-        let window = Window::new(&event_loop).unwrap();
-        window.set_inner_size(LogicalSize {
+        let window = Arc::new(Window::new(&event_loop).unwrap());
+        window.set_min_inner_size(Some(LogicalSize {
             width: 1280.0,
             height: 720.0,
-        });
+        }));
         window.set_title(&format!("imgui-wgpu {version}"));
         let size = window.inner_size();
 
-        let surface = unsafe { instance.create_surface(&window) }.unwrap();
+        let surface = instance.create_surface(window.clone()).unwrap();
 
         (window, size, surface)
     };
@@ -50,8 +47,8 @@ fn main() {
     let (device, queue) = block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: None,
-            features: wgpu::Features::empty(),
-            limits: wgpu::Limits::default(),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
         },
         None,
     ))
@@ -66,6 +63,7 @@ fn main() {
         present_mode: wgpu::PresentMode::Fifo,
         alpha_mode: wgpu::CompositeAlphaMode::Auto,
         view_formats: vec![wgpu::TextureFormat::Bgra8Unorm],
+        desired_maximum_frame_latency: 2,
     };
 
     surface.configure(&device, &surface_desc);
@@ -137,12 +135,8 @@ fn main() {
     let mut last_cursor = None;
 
     // Event loop
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = if cfg!(feature = "metal-auto-capture") {
-            ControlFlow::Exit
-        } else {
-            ControlFlow::Poll
-        };
+    event_loop.run(move |event, control_flow| {
+        control_flow.set_control_flow(ControlFlow::Poll);
         match event {
             Event::WindowEvent {
                 event: WindowEvent::Resized(size),
@@ -156,6 +150,7 @@ fn main() {
                     present_mode: wgpu::PresentMode::Fifo,
                     alpha_mode: wgpu::CompositeAlphaMode::Auto,
                     view_formats: vec![wgpu::TextureFormat::Bgra8Unorm],
+                    desired_maximum_frame_latency: 2,
                 };
 
                 surface.configure(&device, &surface_desc);
@@ -163,12 +158,10 @@ fn main() {
             Event::WindowEvent {
                 event:
                     WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                virtual_keycode: Some(VirtualKeyCode::Escape),
-                                state: ElementState::Pressed,
-                                ..
-                            },
+                        event: KeyEvent {
+                            physical_key: PhysicalKey::Code(KeyCode::Escape),
+                            ..
+                        },
                         ..
                     },
                 ..
@@ -177,12 +170,12 @@ fn main() {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                *control_flow = ControlFlow::Exit;
+                control_flow.exit();
             }
-            Event::MainEventsCleared => {
+            Event::AboutToWait => {
                 window.request_redraw();
             }
-            Event::RedrawEventsCleared => {
+            Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
                 let now = Instant::now();
                 imgui.io_mut().update_delta_time(now - last_frame);
                 last_frame = now;
@@ -250,5 +243,5 @@ fn main() {
         }
 
         platform.handle_event(imgui.io_mut(), &window, &event);
-    });
+    }).unwrap();
 }
